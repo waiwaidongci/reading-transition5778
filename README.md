@@ -10,10 +10,29 @@
 
 1. 业务总览：批次、样本、任务与批准交付账册。
 2. 阅读文集：创建/修改来源说明、查看样本、用真实业务字段追加记录；列表分页。
-3. 分析配置：冻结来源、参数和全部样本，进入Redis队列。
-4. 完整结果：真实算法摘要、专属诊断、全部CSV导出和可恢复失败态。
-5. 编辑衔接建议：分析师草案→负责人批准→阅读者下载批准快照。
-6. 审计：登录、来源修改、任务worker完成、业务说明批准等事件。
+3. 章节归一：文集章节归一词典切版——别名链归到终点、循环与一名多义拒绝、连续同章折叠、版本/进度/失败原因可查、撤销合并恢复原文。
+4. 分析配置：冻结来源、参数、全部样本与当前词典版本，进入Redis队列。
+5. 完整结果：真实算法摘要、专属诊断、全部CSV导出和可恢复失败态。
+6. 编辑衔接建议：分析师草案→负责人批准→阅读者下载批准快照。
+7. 审计：登录、来源修改、词典切版与回填、任务worker完成、业务说明批准等事件。
+
+## 章节归一词典切版
+
+同一章节的旧名与新名曾被分开计数，而误合并又无法撤销。系统按文集维护**版本化的归一词典**：
+
+- **别名链归到终点**：如 `楔子→序章→开篇`，链上所有旧名最终按终点章节「开篇」计数；完整链路随版本保存。
+- **循环与一名多义拒绝**：`甲→乙→甲` 之类循环、同一旧名指向两个新名、自指别名在提交与预览接口直接 422 拒绝，不产生版本。
+- **原始路径保留**：样本中的原始 `path` 永不改写；归一结果单独存于 `normalized_reading_sessions`，研究快照同时保存原始路径与冻结的归一路径。
+- **折叠后重算全部分母**：归一后连续同章折叠（不再产生自接续边），接续次数、条件概率分母、目标基率、提升度全部在归一后的路径上重算；结果摘要同时给出原始相邻对与折叠后接续边数。
+- **回填可中断恢复**：切版触发独立 worker 分批回填（默认每批500条，`BACKFILL_BATCH_SIZE` 可调），每批提交进度水位；十万级会话回填期间仍可追加新会话，进程中断后从断点续跑，重试幂等、不新增接续行。
+- **页面只见完整旧版或新版**：新版本在回填完成并人工发布前为 `building`，页面归一列始终按当前发布版展示；发布是一次原子切换，旧版转为 `superseded` 但完整保留。
+- **切换前接收的会话也要纳入**：发布前校验当前会话总数与已归一数量，若回填后又有新会话，提示先重试回填补齐，否则拒绝发布。
+- **并发切版只发布一版**：同一文集同时只允许一个 `building` 版本（第二个切版请求 409），worker 侧另以 Redis 来源锁串行化回填。
+- **受理即锁定**：研究在队列中或计算中时，该文集的词典切版与样本追加被锁定；研究冻结的是受理时点的词典版本与输入，排队之后再切版不改变该研究结果。
+- **撤销合并恢复原文**：撤销不是再做一次易错的人工改写，而是重新发布该文集的 v1 空词典（恒等映射），归一路径恢复为原文；全部历史版本与旧研究判定保留。
+- **旧研究及批准建议保留原判定**：历史任务与已批准业务说明的结果快照不受后续切版影响，仍可按原口径导出。
+- 每个文集首次使用时自动建立 **v1 空词典基线**（即完整旧版原文，无需回填）。
+
 
 ## 快速启动
 
@@ -53,9 +72,9 @@ JWT有效期8小时；PBKDF2盐化哈希保存密码；角色每请求从数据�
 
 ## 实体与字段
 
-ReadingCollection / ReadingSession / TransitionRun / EditorialPlan 是核心实体；另有User和Audit。数据库实际表：`reading_collections` → `reading_sessions` → `transition_runs` → `editorial_plans`。样本以固定字段JSON保存，后端按以下字段严格验证，不接受未知字段替代必填值：匿名会话编号（`session`）、章节路径（用 > 分隔）（`path`）。
+ReadingCollection / ReadingSession / TransitionRun / EditorialPlan 是核心实体，另有User和Audit；章节归一新增 DictVersion（词典版本）、BackfillJob（回填任务）、NormalizedSession（归一会话产物）。数据库实际表：`reading_collections` → `reading_sessions` → `transition_runs` → `editorial_plans`，以及 `chapter_dictionary_versions`、`dictionary_backfill_jobs`、`normalized_reading_sessions`。样本以固定字段JSON保存，后端按以下字段严格验证，不接受未知字段替代必填值：匿名会话编号（`session`）、章节路径（用 > 分隔）（`path`）。
 
-实体贯穿 `backend/src/models`、`schemas`、`services`、`controllers`、`routes`，以及 `frontend/src/api/research.js`、`stores/research.js` 和 `pages`。`Source.key` 与 `(Record.source_id, reference)` 为自然键；来源改名不会修改已冻结任务输入。业务说明在创建时保存结果快照，批准后从该快照导出。
+实体贯穿 `backend/src/models`、`schemas`、`services`、`controllers`、`routes`，以及 `frontend/src/api/research.js`、`stores/research.js` 和 `pages`。`Source.key` 与 `(Record.source_id, reference)` 为自然键；来源改名不会修改已冻结任务输入。`Source.active_version_id` 指向当前发布词典，`Run.dict_version_id` 与快照中的 `dict_version` 固定研究口径。业务说明在创建时保存结果快照，批准后从该快照导出。
 
 ## 算法与口径
 
@@ -90,6 +109,7 @@ frontend/src/api, stores, types, components/common, hooks, pages, router, utils,
 backend/src/routes, controllers, services, models, schemas, middlewares, utils, constants, config
 backend/scripts/seed_demo.py
 backend/migrations/001_initial.sql
+backend/migrations/002_dictionary_cutover.sql
 ```
 
 本地后端：Python3.11虚拟环境安装 `backend/requirements.txt`，设置 `DATABASE_URL`、`REDIS_URL`、`ARTIFACT_DIR`，在backend目录运行 `uvicorn src.main:app --reload`；另开终端运行 `python -m src.worker`。原生前端无需编译，推荐以Compose Nginx访问，保证 `/api/` 代理。前端为Google Fonts双字体、oklch色板，离线字体回退serif；1280/768/390响应布局。
@@ -105,4 +125,4 @@ backend/migrations/001_initial.sql
 
 共享枚举：`backend/src/constants/enums.py` 与 `frontend/src/constants/enums.js` 都定义 admin/analyst/viewer、queued/running/completed/failed、draft/approved。后端service检查对应字符串；README为全量值说明。共享前端组件table/status/chart/business跨总览、结果、配置与复核复用；actions hook和format utils负责交互/格式。后端errors与rate_limit是两个中间件。
 
-测试及截图在批根 `test-artifacts/gb-0043/`，不混入源码。独立算法oracle、HTTP完整流程和真实Playwright浏览器流程见该目录 `TESTING.md`。License：MIT。
+测试及截图在批根 `test-artifacts/gb-0043/`，不混入源码。独立算法oracle、HTTP完整流程和真实Playwright浏览器流程见该目录 `TESTING.md`；章节归一另有 `test_dictionary.py`（59项服务级断言）、`test_http_flow.py`（29项HTTP断言）与 `browser/browser_e2e.js`（19项真实浏览器断言），无需外部MySQL/Redis即可运行。License：MIT。

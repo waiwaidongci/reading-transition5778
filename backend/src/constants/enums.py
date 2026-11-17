@@ -5,3 +5,7 @@ class RunState(str,Enum):
     queued='queued'; running='running'; completed='completed'; failed='failed'
 class ReviewState(str,Enum):
     draft='draft'; approved='approved'
+class DictState(str,Enum):
+    building='building'; published='published'; superseded='superseded'; failed='failed'
+class BackfillState(str,Enum):
+    queued='queued'; running='running'; completed='completed'; failed='failed'

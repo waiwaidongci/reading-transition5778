@@ -8,8 +8,9 @@ from src.models.record import Record
 from src.models.run import Run
 from src.models import note,audit
 from src.utils.security import hash_password
-from src.utils.serialization import now
+from src.utils.serialization import now,row
 from src.services.runs import queue
+from src.services.normalization import ensure_baseline,canonical_paths_for
 from src.services.domain_validation import validate_record
 
 def seed_values(kind,index,batch,rng):
@@ -43,6 +44,7 @@ def seed():
             source=db.scalar(select(Source).where(Source.key==key))
             if not source:
                 source=Source(key=key,name=key+' '+['秋季常规组','复测对照组','工艺观察组'][batch],filename=CONFIG['slug']+f'-202611-{batch+1:02}.csv',description=CONFIG['scenario']);db.add(source);db.flush()
+                ensure_baseline(db,source,'seed')
             for index in range(CONFIG['seed_count']):
                 reference=key+f'-{index+1:04}'
                 vals=seed_values(CONFIG['algorithm'],index,batch,rng)
@@ -50,8 +52,14 @@ def seed():
                     db.add(Record(source_id=source.id,reference=reference,values=validate_record(vals)))
             db.flush()
             if batch==0 and not db.scalar(select(Run.id).where(Run.name=='首轮种子研究')):
-                records=[{'id':r.id,'source_id':r.source_id,'reference':r.reference,'values':r.values} for r in db.scalars(select(Record).where(Record.source_id==source.id).order_by(Record.id))]
-                run=Run(source_id=source.id,name='首轮种子研究',state='queued',parameters=CONFIG['default_parameters'],snapshot={'source':{'id':source.id,'name':source.name,'filename':source.filename},'records':records},created_at=now());db.add(run);db.flush();queued.append(run.id)
+                base=ensure_baseline(db,source,'seed')
+                record_objs=list(db.scalars(select(Record).where(Record.source_id==source.id).order_by(Record.id)))
+                records=[{'id':r.id,'source_id':r.source_id,'reference':r.reference,'values':r.values} for r in record_objs]
+                canonical=canonical_paths_for(db,base,record_objs)
+                for item in records:item['canonical_path']=canonical[item['id']]
+                run=Run(source_id=source.id,name='首轮种子研究',state='queued',parameters=CONFIG['default_parameters'],
+                        snapshot={'source':{'id':source.id,'name':source.name,'filename':source.filename},'records':records,'dict_version':row(base)},
+                        dict_version_id=base.id,created_at=now());db.add(run);db.flush();queued.append(run.id)
         db.commit();print(json.dumps(counts(db),ensure_ascii=False))
     for id in queued:
         try:queue.rpush('analysis:queue',id)

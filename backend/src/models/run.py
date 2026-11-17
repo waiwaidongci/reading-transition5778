@@ -11,4 +11,5 @@ class Run(Base):
     snapshot=Column(JSON,nullable=False)
     result=Column(JSON,nullable=True)
     error=Column(Text,default='')
+    dict_version_id=Column(Integer,nullable=True)
     created_at=Column(String(40),nullable=False)
